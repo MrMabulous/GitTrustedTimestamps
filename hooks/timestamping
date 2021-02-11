@@ -1,0 +1,379 @@
+#!/bin/bash
+#
+#    RFC3161 and RFC5816 Timestamping for git repositories.
+#
+#    Copyright (c) 2020 Mabulous GmbH
+#    Authors: Matthias Bühlmann
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU Affero General Public License as
+#    published by the Free Software Foundation, either version 3 of the
+#    License, or (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU Affero General Public License for more details.
+#
+#    You should have received a copy of the GNU Affero General Public License
+#    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#    
+#    The interactive user interfaces in modified source and object code versions
+#    of this program must display Appropriate Legal Notices, as required under
+#    Section 5 of the GNU Affero General Public License version 3.
+#    
+#    You can be released from the requirements of the license by purchasing
+#    a commercial license. Buying such a license is mandatory as soon as you
+#    develop commercial activities involving this software without
+#    disclosing the source code of your own applications.
+#    These activities include: offering paid services to customers as an ASP,
+#    providing data storage and archival services, shipping this software with a 
+#    closed source product.
+#    
+#    For more information, please contact Mabulous GmbH at this
+#    address: info@mabulous.com
+#
+
+#set exit trap to clean up temporary files
+TMP_DIR="$(mktemp -d)"
+mkdir -p "$TMP_DIR"/ltvdir/certs
+mkdir -p "$TMP_DIR"/ltvdir/crls
+TMP_LTV_DIR="$TMP_DIR"/ltvdir
+
+OUT_STREAM=/dev/null
+#OUT_STREAM=/dev/stdout
+
+#echo red text
+echo_error() {
+  local RED='\033[0;31m'
+  local NO_COLOR='\033[0m'
+  echo -e "${RED}$1${NO_COLOR}"
+}
+
+#echo yellow text
+echo_warning() {
+  local YELLOW='\033[1;33m'
+  local NO_COLOR='\033[0m'
+  echo -e "${YELLOW}$1${NO_COLOR}"
+}
+
+#echo light blue text
+echo_info() {
+  local LIGHT_BLUE='\033[1;34m'
+  local NO_COLOR='\033[0m'
+  echo -e "${LIGHT_BLUE}$1${NO_COLOR}"
+}
+
+#echo dark gray text to OUT_STREAM
+log() {
+  local DARK_GRAY='\033[1;30m'
+  local NO_COLOR='\033[0m'
+  echo -e "${DARK_GRAY}$1${NO_COLOR}" > "$OUT_STREAM"
+}
+
+exit_trap() {
+  local EXIT_CODE="$?"
+  rm -rf -- "$TMP_DIR"
+  exit "$EXIT_CODE"
+}
+trap "exit_trap" EXIT
+
+TOKEN_HEADER="-----BEGIN RFC3161 TOKEN-----"
+TOKEN_FOOTER="-----END RFC3161 TOKEN-----"
+SUBJECT_LINE="-----TIMESTAMP COMMIT-----"
+#get hashing algorithm used by repo
+ALGO=$(git rev-parse --show-object-format)
+#get directory to store validation data
+LTV_DIR=$(git rev-parse --git-dir)/../.timestampltv
+#get directory for trusted RootCA certificates
+CA_PATH=$(git rev-parse --git-path hooks/trustanchors)
+if [ ! -d "$CA_PATH" ]; then
+  mkdir -p "$CA_PATH"
+fi
+
+# function to extract ESSCertID or ESSCertIDv2 of TSA from token
+# param1: path to token in DER encoding
+# param2: OUT variable, the ID
+get_tsa_cert_id() {
+  local TOKEN_FILE="$1"
+  local -n CERT_ID="$2"
+  log "get_tsa_cert_id for $TOKEN_FILE"
+  
+  #this works for both ESSCertID as well as ESSCerrtIDv2 since the version2 identifier is id-smime-aa-signingCertificateV2
+  CERT_ID=$(openssl asn1parse -inform DER -in "$TOKEN_FILE" \
+            | awk '/:id-smime-aa-signingCertificate/{f=1} f && /\[HEX DUMP\]:/ {print; exit}' \
+            | sed 's/^.*\[HEX DUMP\]://1')
+  if [ -z "$CERT_ID" ]; then
+    echo "Token $TOKEN_FILE does not contain ESSCertID or ESSCertIDv2 of issuer."
+    return 1
+  fi
+  return 0
+}
+
+# function to extract hashing algorithm used in the ESSCertID (always sha1) or ESSCertIDv2
+# param1: path to token in DER encoding
+# param2: OUT variable, the hashing algorithm string
+get_cert_id_hash_agorithm() {
+  local TOKEN_FILE="$1"
+  local -n ALGO_NAME="$2"
+  log "get_cert_id_hash_agorithm for $TOKEN_FILE"
+  
+  local PARSED=$(openssl asn1parse -inform DER -in "$TOKEN_FILE")
+  
+  if [[ "$PARSED" == *":id-smime-aa-signingCertificateV2"* ]]; then
+    #TODO: extract non-default hashing algorithms
+    ALGO_NAME="sha256"
+  elif [[ "$PARSED" == *":id-smime-aa-signingCertificate"* ]]; then
+    ALGO_NAME="sha1"
+  else
+    ALGO_NAME="unknown"
+  fi
+  return 0
+}
+
+#function to request a timestamp for a specified digest
+# param1: tsa url
+# param2: digest
+# param3: whether to request certificates to be included (true or false)
+# param4: the file to output the token to
+request_token() {
+  local TSA_URL="$1"
+  local DIGEST="$2"
+  local REQUEST_CERTS="$3"
+  local OUTPUT_FILE="$4"
+  log "request_token for digest $DIGEST from url $TSA_URL. REQUEST_CERTS=$REQUEST_CERTS"
+
+  local CONTENT_TYPE="Content-Type: application/timestamp-query"
+  local ACCEPT_TYPE="Accept: application/timestamp-reply"
+
+  local REQ_FILE="$TMP_DIR"/token_req.tsq
+  if [ "$REQUEST_CERTS" = true ]; then
+    if ! openssl ts -query -cert -digest "$DIGEST" -"$ALGO" -out "$REQ_FILE" &> "$OUT_STREAM"; then
+      echo "Failed to create token query"
+      return 1
+    fi
+  else
+    if ! openssl ts -query -digest "$DIGEST" -"$ALGO" -out "$REQ_FILE" &> "$OUT_STREAM"; then
+      echo "Failed to create token query"
+      return 1
+    fi
+  fi
+  local RESPONSE_FILE="$TMP_DIR"/response.tsr
+  if ! curl "$TSA_URL" -H "$CONTENT_TYPE" -H "$ACCEPT_TYPE" --data-binary @"$REQ_FILE" --output "$RESPONSE_FILE" &> "$OUT_STREAM"; then
+    echo "Failed to get response from $TSA_URL"
+    return 1
+  fi
+  if ! openssl ts -reply -in "$RESPONSE_FILE" -token_out -out "$OUTPUT_FILE" &> "$OUT_STREAM"; then
+    echo "Not a valid TSA response in file $RESPONSE_FILE"
+    return 1
+  fi
+  return 0
+}
+
+#builds a certificate chain for token. The passed token must have been requested with -cert option
+# and with matching digest.
+# param1: token file. Token must have been requested with -cert option and with digest of param2
+# param2: the digest the token was requested for
+# param3: the output file for the chain. It contains all certificates in order, with the first
+#         one being the TSA cetificate and the last one the self-signed root certificate.
+build_certificate_chain_for_token() {
+  local TOKEN_FILE="$1"
+  local DIGEST="$2"
+  local TSA_URL="$3"
+  local CERT_FILE="$4"
+  log "build_certificate_chain_for_token for token $TOKEN_FILE with digest $DIGEST and certificate file $CERT_FILE"
+
+  local DUMMY_TOKEN="$TMP_DIR"/dummy_token.tst
+  local ALL_EXTRACTED_CERTS="$TMP_DIR"/extracted_certs.pem
+  local CHAIN=()
+  #if the TSA uses multiple certificates to sign tokens it may take a few attempts to get one containint the proper signer
+  #TODO: allow to set maximum retry attempts
+  local SIGNING_CERT_ID=""
+  get_tsa_cert_id "$TOKEN_FILE" SIGNING_CERT_ID
+  local CERT_ID_HASH_ALGO=""
+  get_cert_id_hash_agorithm "$TOKEN_FILE" CERT_ID_HASH_ALGO
+  for i in {1..10} ;do
+    #request dummy token. Use current commit digest
+    request_token "$TSA_URL" "$DIGEST" true "$DUMMY_TOKEN"
+
+    #extract certifcates
+    openssl pkcs7 -inform DER -in "$DUMMY_TOKEN" -print_certs -outform PEM -out "$ALL_EXTRACTED_CERTS" &> "$OUT_STREAM"
+
+    #remove files from previous runs
+    rm -f "$TMP_DIR"/*.extracted.pem.cer
+    rm -f "$TMP_DIR"/cert_chain_*.pem.cer
+
+    #extract all individual certificates from ALL_EXTRACTED_CERTS
+    cat "$ALL_EXTRACTED_CERTS" \
+    | awk '/-----BEGIN CERTIFICATE-----/ { i++; } /-----BEGIN CERTIFICATE-----/, /-----END CERTIFICATE-----/ \
+    { print > tmpdir i ".extracted.pem.cer" }' tmpdir="$TMP_DIR/"
+
+    #find cetificate that signed token
+    while read EXTRACTED_CERT; do
+      local CERT_ID=$(openssl x509 -inform PEM -in "$EXTRACTED_CERT" -outform DER | openssl dgst -"$CERT_ID_HASH_ALGO" -binary | xxd -p -c 256)
+      #if openssl ts -verify -digest "$DIGEST" -in "$TOKEN_FILE" -token_in -partial_chain -CAfile "$EXTRACTED_CERT" &> "$OUT_STREAM"; then
+      if [ "${SIGNING_CERT_ID,,}" == "${CERT_ID,,}" ]; then
+        #found the signer certificate
+        CHAIN+=("$TMP_DIR"/cert_chain_"${#CHAIN[@]}".pem.cer)
+        mv -f "$EXTRACTED_CERT" "${CHAIN[-1]}"
+        break 2
+      fi
+    done <<< $(ls "$TMP_DIR"/*.extracted.pem.cer)
+  done
+  
+  if [ ${#CHAIN[@]} -eq 0 ]; then
+    echo "Unable to download token that contains signing cert for this token:"
+    openssl ts -reply -token_in -token_out -in "$TOKEN_FILE" -text
+    return 1
+  fi
+
+  #iterate until self-signed certificate is reached
+  while ! openssl verify -CAfile "${CHAIN[-1]}" "${CHAIN[-1]}" &> "$OUT_STREAM"; do
+    #try to find parent certificate in extracted certs
+    if ls "$TMP_DIR"/*.extracted.pem.cer &> "$OUT_STREAM"; then
+      while read EXTRACTED_CERT; do
+        if openssl verify -partial_chain -CAfile "$EXTRACTED_CERT" "${CHAIN[-1]}" &> "$OUT_STREAM"; then
+          CHAIN+=("$TMP_DIR"/cert_chain_"${#CHAIN[@]}".pem.cer)
+          mv -f "$EXTRACTED_CERT" "${CHAIN[-1]}"
+          continue 2
+        fi
+      done <<< $(ls "$TMP_DIR"/*.extracted.pem.cer)
+    fi 
+    
+    #otherwise try to find in trust store
+    if ls "$CA_PATH"/*.0 &> "$OUT_STREAM"; then
+      while read TRUSTED_CERT; do
+        if openssl verify -partial_chain -CAfile "$TRUSTED_CERT" "${CHAIN[-1]}" &> "$OUT_STREAM"; then
+          CHAIN+=("$TRUSTED_CERT")
+          continue 2
+        fi
+      done <<< $(ls "$CA_PATH"/*.0)
+    fi
+    
+    #otherwise try to download
+    local URL=$(openssl x509 -inform PEM -noout -text -in "${CHAIN[-1]}" \
+                | awk '/Authority Information Access:/{f=1} f && /CA Issuers - URI:/ {print; exit}' \
+                | sed 's/^.*CA Issuers - URI://1')
+    if [ -z "$URL" ]; then
+      echo "Certificate ${CHAIN[-1]} does not contain Authority Information Access extension with CA issuer URL. Can't build certificate chain."
+      return 1
+    fi
+    CHAIN+=("$TMP_DIR"/cert_chain_"${#CHAIN[@]}".pem.cer)
+    local TMP_DOWNLOAD="$TMP_DIR"/tmp_download.crt
+    if ! curl "$URL" --output "$TMP_DOWNLOAD" &> "$OUT_STREAM"; then
+      echo "Failed to download issuer certificate from $URL"
+      return 1
+    fi
+    #convert from DER to PEM if necessary
+    if openssl x509 -inform PEM -in "$TMP_DOWNLOAD" -noout &> "$OUT_STREAM"; then
+      openssl x509 -inform PEM -in "$TMP_DOWNLOAD" -outform PEM -out "${CHAIN[-1]}"
+    elif openssl x509 -inform DER -in "$TMP_DOWNLOAD" -noout &> "$OUT_STREAM"; then
+      openssl x509 -inform DER -in "$TMP_DOWNLOAD" -outform PEM -out "${CHAIN[-1]}"
+    else
+      echo "Unknown certificate file format for $URL"
+      return 1
+    fi
+  done
+
+  echo -n > "$CERT_FILE"
+  for CERT in "${CHAIN[@]}"; do
+    openssl x509 -in "$CERT" -noout -subject >> "$CERT_FILE"
+    echo '' >> "$CERT_FILE"
+    openssl x509 -in "$CERT" -noout -issuer >> "$CERT_FILE"
+    echo '' >> "$CERT_FILE"
+    cat "$CERT" >> "$CERT_FILE"
+    echo '' >> "$CERT_FILE"
+  done
+  return 0
+}
+
+# Tries to download CRLs for the entire chain and store them together in PEM encoding in an output file.
+# param1: path to the certificate chain in PEM format
+# param2: path to output file
+# TODO: performance of this could be improved by using OCSPs to check for changes first
+download_crls_for_chain() {
+  local CERT_FILE="$1"
+  local OUTPUT_FILE="$2"
+  log "download_crls_for_chain for certificate file $CERT_FILE and store to $OUTPUT_FILE"
+
+  echo -n > "$OUTPUT_FILE"
+  local CRL_TMP="$TMP_DIR"/crl_tmp.crl
+  #remove files from possible previous runs
+  rm -f "$TMP_DIR"/*.extracted.pem.cer
+  #extract all contained certificates into separate files
+  cat "$CERT_FILE" \
+  | awk '/-----BEGIN CERTIFICATE-----/ { i++; } /-----BEGIN CERTIFICATE-----/, /-----END CERTIFICATE-----/ \
+  { print > tmpdir i ".extracted.pem.cer" }' tmpdir="$TMP_DIR/"
+  
+  #iterate over certificates. Ignore self-signed certificates
+  ls "$TMP_DIR"/*.extracted.pem.cer | while read EXTRACTED_CERT; do
+    if ! openssl verify -CAfile "$EXTRACTED_CERT" "$EXTRACTED_CERT" &> "$OUT_STREAM"; then
+      local URL=$(openssl x509 -inform PEM -in $EXTRACTED_CERT -text -noout \
+                  | awk '/CRL Distribution Points:/{f=1} f && /URI:/ {print; exit}' \
+                  | sed 's/^.*URI://1')
+      if curl "$URL" --output "$CRL_TMP" &> "$OUT_STREAM"; then
+        if openssl crl -in "$CRL_TMP" -inform DER -noout &> "$OUT_STREAM"; then
+          openssl crl -in "$CRL_TMP" -inform DER >> "$OUTPUT_FILE"
+        elif openssl crl -in "$CRL_TMP" -inform PEM -noout &> "$OUT_STREAM"; then
+          openssl crl -in "$CRL_TMP" -inform PEM >> "$OUTPUT_FILE"
+        else
+          echo "Unknown CRL file format for $URL"
+          return 1    
+        fi
+      else
+        echo "Failed to download CRL from $URL"
+        return 1
+      fi  
+    fi
+  done
+  return 0
+}
+
+# Check whether the file containing the certificates to verify the token are available and if not,
+# request and add them to the commit.
+# param1: path to token in DER encoding
+# param2: digest to verify
+# param3: tsa url
+verify_token_and_add_ltv_data() {
+  local TOKEN_FILE="$1"
+  local DIGEST="$2"
+  local TSA_URL="$3"
+  log "verify_token_and_add_ltv_data for token $TOKEN_FILE and digest $DIGEST from url $TSA_URL"
+
+  local SIGNING_CERT_ID=''
+  get_tsa_cert_id "$TOKEN_FILE" SIGNING_CERT_ID
+  local CERT_CHAIN_FILE="$LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
+  if [ ! -f "$CERT_CHAIN_FILE" ]; then
+    CERT_CHAIN_FILE="$TMP_LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
+    #try to build full chain.
+    if ! build_certificate_chain_for_token "$TOKEN_FILE" "$DIGEST" "$TSA_URL" "$CERT_CHAIN_FILE"; then
+      echo "Unable to build certificate chain."
+      return 1
+    fi
+    if ! openssl verify --CApath "$CA_PATH" -untrusted "$CERT_CHAIN_FILE" "$CERT_CHAIN_FILE" &> "$OUT_STREAM"; then
+      echo "TSA certificate from $TSA_URL is not trusted. Check your trustanchors in $CA_PATH"
+      return 1
+    fi
+  fi
+  #verify token and download CRL data
+  local CRL_CHAIN_FILE="$TMP_LTV_DIR"/crls/"$SIGNING_CERT_ID.crl"
+  download_crls_for_chain "$CERT_CHAIN_FILE" "$CRL_CHAIN_FILE"
+  #verify signing certificate
+  local TOKEN_TIMESTAMP=$(openssl ts -reply -in "$TOKEN_FILE" -token_in -token_out -text 2> "$OUT_STREAM" \
+                          | awk '/Time stamp:/{f=1} f {print; exit}' \
+                          | sed 's/^.*Time stamp: //1')
+  local TOKEN_UNIXTIME=$(date "+%s" -d "$TOKEN_TIMESTAMP")
+  #validate signing certificate
+  if ! openssl verify -attime "$TOKEN_UNIXTIME" -CApath "$CA_PATH" -CRLfile "$CRL_CHAIN_FILE" \
+                      -crl_check_all -untrusted "$CERT_CHAIN_FILE" "$CERT_CHAIN_FILE" &> "$OUT_STREAM"; then
+    echo "TSA certificate from $TSA_URL could not be validated."
+    return 1
+  fi
+  #validate token
+  if ! openssl ts -verify -digest "$DIGEST" -in "$TOKEN_FILE" -token_in -attime "$TOKEN_UNIXTIME" \
+                  -CApath "$CA_PATH" -untrusted "$CERT_CHAIN_FILE" 2> "$OUT_STREAM"; then
+    echo "Token from $TSA_URL could not be validated."
+    return 1
+  fi
+  return 0
+}

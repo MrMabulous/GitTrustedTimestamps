@@ -1,4 +1,5 @@
 # GitTrustedTimestamps
+
 RFC3161 and RFC5816 Timestamping for git repositories.
 
 By using this post-commit hook in a repository and thereby adding secure timestamps to the commits it contains, the repository gains the following properties:
@@ -11,13 +12,32 @@ By using this post-commit hook in a repository and thereby adding secure timesta
 
 RFC3161 (https://tools.ietf.org/html/rfc3161) and its extension RFC5816 (https://tools.ietf.org/html/rfc5816) are protocol specifications timestamp data using cryptographically secure tokens issued by an external, trusted third party TSA (Time Stamping Authority). By timestamping data this way, it is possible to prove to anyone who trusts this TSA service that the data existed already at the time of timestamping and has not been tampered with ever since. Only a secure hash of the data, without any identification, is being sent to the TSA service, so the data itself remains secret.
 
+# Alternatives
+
+Before writing this software, I evaluated alternatives available at the time of writing (Feb 2021). I will briefly list and discuss my findings here to outline the differences.
+
+- There is a stackoverflow question (https://stackoverflow.com/questions/11913228/how-can-i-use-rfc3161-trusted-timestamps-to-prove-the-age-of-commits-in-my-git) and subsequently posted code review (https://codereview.stackexchange.com/questions/15380/adding-trusted-timestamps-to-git-commits):  
+This script allows to manually create timestamps for revisions and store them in git-notes. This was not sufficient for me since having timestamps stored in git-notes makes them "cryptographically dangling" in the sense that the timestamped repository does not depend on them (meaning that they can be "lost" without being noticed). This may be the preferred solution for someone who just wants to be *able* to prove the time the code was created, without creating a repository which is *tamperproof* (and without the benefits discussed further down). Also, the script does not take CRLs into consideration for validation.
+
+- GitLock (https://www.npmjs.com/package/gitlock):  
+GitLock adds timestamps as tags, which, like git-notes, also won't make the timestamped repository depend/include the timestamps themselves and thus offers the same advantages/disadvantages as the former one. It also creates a parallel SHA256 hierarchy (which isn't necessary anymore, since git now provides native SHA256 support) and depends on a Node.js application that must be installed and used manually.
+
+- There is [this](https://gitlab.cs.fau.de/CSG/git-rfc3161) fork of git:  
+The fork was created as part of a university project to add native support for RFC3161 tokens to git. There is a corresponding discussion in the archived git mailing list (http://git.661346.n2.nabble.com/Adding-RFC-3161-timestamps-to-git-tags-td7650116.html). Since it requires a custom build of git and wasn't adopted by the official repo, I did not further investigate this implementation.
+
+- There is [this](https://www.gwern.net/Timestamping#timestamping-version-control-systems) article discussing timestamping git repositories:  
+It is using the OriginStamp (https://originstamp.com/) timestamping service. This solution does not use RFC3161 but instead relies on publication of hashes in public blockchains using the OriginStamp service (which comes with the advantages and disadvantages of blockchain transactions, such as long confirmation times and high transaction fees).
+
+- Zeitgitter (https://pypi.org/project/git-timestamp/)
+Zeitgitter seems to use a custom timestamping protocol and rely on developers cross-verifying their timestamps. Since it requires a custom client and server and does not rely on RFC3161, I did not futher investigate this implementation.
+
 # Dependencies
 
-One goal of this project is to only use "vanilla" git features to add the timestamps in order to stay as forward compatible as possible, as well as to not rely on new binaries (which would need to be trusted too). The software is implemented as bash scripts and uses OpenSSL (https://www.openssl.org/) and git itself for all cryptographic computations.
+The design goals of this implementation are simplicity (security without obscurity), using only "vanilla" git features to add the timestamps in order to stay as forward compatible as possible, as well as to not rely on new binaries (which would need to be trusted too). The software is implemented as bash scripts and uses OpenSSL (https://www.openssl.org/) and git itself for all cryptographic operations.
 
 # How to use this software
 
-0. (optional, but recommended) if you're ceating a new repository, it is strongly recommended to use SHA256 hashes (git uses SHA1 by default at the time of writing) by initializing the reopository using `git init --object-format=sha256` (Note: If you want to use a public hosting server such as github for your repository, you should check whether they already support SHA256 repositories).
+0. (optional, but recommended) if you're ceating a new repository, it is strongly recommended to use SHA256 hashes (git uses SHA1 by default at the time of writing) by initializing the reopository using `git init --object-format=sha256` (Note: If you want to use a public hosting server such as github for your repository, you should check whether they already support SHA256 repositories). For more information, see https://git-scm.com/docs/hash-function-transition/
 1. Copy the three bash scripts in the [hooks](hooks/) folder of this project into the .git/hooks folder of the project you want to timestamp.
 2. Configure the TSA url you want to use (in this example https://freetsa.org/tsr) using `git config --local timestamping.tsa0.url https://freetsa.org/tsr`
 3. You must declare that you trust this TSA by copying the root certificate of that TSA's trust chain into the .git/hooks/trustanchors folder (create it if it doesn't exist yet). The certificate MUST be in PEM format and the filename MUST be "subject_hash.0" where`subject_hash` is what openssl returns for the `--subject_hash` argument for x509 cetificates (https://www.openssl.org/docs/man1.1.1/man1/x509.html).  
@@ -41,7 +61,11 @@ Additionally to retrieving TSA tokens and timestamping the commits with them, th
 # LTV data:
 
 Additionally to the bare timestamp tokens stored in the commit message as trailers, the *timestamping commit* also adds revisioned files to the .timestampltv folder. If the timestamps should be evaluated many years in the future when the entire certificate chains of tokens for example are not available anymore, this *Long Term Validation* data will facilitate validating the tokens. For each *timestamping commit* two files will be stored:
-1. .timestampltv/certs/issuer_hash.cer: This file contains the entire trust chain of the TSA certificate in PEM format. In most cases this file will not change for subsequent timestamp tokens, so no additional data is added to the repository (the file content only changes if the TSA changes its signing certificate).
-2. .timestampltv/crls/issuer_hash.crl: This file contains CRL responses in PEM format for all certificates in the trust chain at the time of timestamping.
+1. .timestampltv/certs/issuer_hash.cer: This file contains the entire trust chain of the TSA certificate in PEM format (the first certificate being the TSA's signing certificate and the last being the self-signed root). In most cases this file will not change for subsequent timestamp tokens, so no additional data is added to the repository (the file content only changes when the TSA changes its signing certificate).
+2. .timestampltv/crls/issuer_hash.crl: This file contains CRL responses in PEM format for all certificates in the trust chain at the time of timestamping. In most cases this file will not change for subsequent timestamp tokens, so no additional data is added to the repository (the file content only changes when the CRL lists referenced by certificate in the trust chain change).
 
 The `issuer_hash` for both files corresponds to the ESSCertID or ESSCertIDv2 hash with which the token identifies its issuer certificate.
+
+# Author
+
+- Matthias Bühlmann

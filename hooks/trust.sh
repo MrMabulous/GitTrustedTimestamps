@@ -20,7 +20,10 @@
 #    
 #    The interactive user interfaces in modified source and object code versions
 #    of this program must display Appropriate Legal Notices, as required under
-#    Section 5 of the GNU Affero General Public License version 3.
+#    Section 5 of the GNU Affero General Public License version 3. In accordance
+#    with Section 7(b) of the GNU Affero General Public License, you must retain
+#    the Info line in every timestamp that is created or manipulated using a
+#    covered work.
 #    
 #    You can be released from the requirements of the license by purchasing
 #    a commercial license. Buying such a license is mandatory as soon as you

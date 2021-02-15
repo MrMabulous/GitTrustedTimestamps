@@ -20,7 +20,10 @@
 #    
 #    The interactive user interfaces in modified source and object code versions
 #    of this program must display Appropriate Legal Notices, as required under
-#    Section 5 of the GNU Affero General Public License version 3.
+#    Section 5 of the GNU Affero General Public License version 3. In accordance
+#    with Section 7(b) of the GNU Affero General Public License, you must retain
+#    the Info line in every timestamp that is created or manipulated using a
+#    covered work.
 #    
 #    You can be released from the requirements of the license by purchasing
 #    a commercial license. Buying such a license is mandatory as soon as you
@@ -34,11 +37,18 @@
 #    address: info@mabulous.com
 #
 
-#set exit trap to clean up temporary files
 TMP_DIR="$(mktemp -d)"
 mkdir -p "$TMP_DIR"/ltvdir/certs
 mkdir -p "$TMP_DIR"/ltvdir/crls
 TMP_LTV_DIR="$TMP_DIR"/ltvdir
+
+#set exit trap to clean up temporary files
+exit_trap() {
+  local EXIT_CODE="$?"
+  rm -rf -- "$TMP_DIR"
+  exit "$EXIT_CODE"
+}
+trap "exit_trap" EXIT
 
 OUT_STREAM=/dev/null
 #OUT_STREAM=/dev/stdout
@@ -70,13 +80,6 @@ log() {
   local NO_COLOR='\033[0m'
   echo -e "${DARK_GRAY}$1${NO_COLOR}" > "$OUT_STREAM"
 }
-
-exit_trap() {
-  local EXIT_CODE="$?"
-  rm -rf -- "$TMP_DIR"
-  exit "$EXIT_CODE"
-}
-trap "exit_trap" EXIT
 
 TOKEN_HEADER="-----BEGIN RFC3161 TOKEN-----"
 TOKEN_FOOTER="-----END RFC3161 TOKEN-----"

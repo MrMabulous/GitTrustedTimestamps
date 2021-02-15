@@ -2,7 +2,7 @@
 #
 #    RFC3161 and RFC5816 Timestamping for git repositories.
 #
-#    Copyright (c) 2020 Mabulous GmbH
+#    Copyright (c) 2021 Mabulous GmbH
 #    Authors: Matthias Bühlmann
 #
 #    This program is free software: you can redistribute it and/or modify

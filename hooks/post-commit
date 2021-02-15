@@ -2,7 +2,7 @@
 #
 #    RFC3161 and RFC5816 Timestamping for git repositories.
 #
-#    Copyright (c) 2020 Mabulous GmbH
+#    Copyright (c) 2021 Mabulous GmbH
 #    Authors: Matthias Bühlmann
 #
 #    This program is free software: you can redistribute it and/or modify
@@ -38,7 +38,7 @@
 #
 
 TSA0_URL=$(git config timestamping.tsa0.url)
-if [ -z "$TSA_URL" ]; then
+if [ -z "$TSA0_URL" ]; then
   # Do nothing if TSA0 has not been configured.
   exit 0
 fi

@@ -84,10 +84,12 @@ log() {
 TOKEN_HEADER="-----BEGIN RFC3161 TOKEN-----"
 TOKEN_FOOTER="-----END RFC3161 TOKEN-----"
 SUBJECT_LINE="-----TIMESTAMP COMMIT-----"
+TRAILER_TOKEN="Timestamp:"
 #get hashing algorithm used by repo
 ALGO=$(git rev-parse --show-object-format)
 #get directory to store validation data
-LTV_DIR=$(git rev-parse --git-dir)/../.timestampltv
+ROOT_DIR=$(git rev-parse --git-dir)/..
+LTV_DIR="$ROOT_DIR"/.timestampltv
 #get directory for trusted RootCA certificates
 CA_PATH=$(git rev-parse --git-path hooks/trustanchors)
 if [ ! -d "$CA_PATH" ]; then
@@ -99,14 +101,14 @@ fi
 # param2: OUT variable, the ID
 get_tsa_cert_id() {
   local TOKEN_FILE="$1"
-  local -n CERT_ID="$2"
+  local -n CERT_ID_OUT="$2"
   log "get_tsa_cert_id for $TOKEN_FILE"
   
   #this works for both ESSCertID as well as ESSCerrtIDv2 since the version2 identifier is id-smime-aa-signingCertificateV2
-  CERT_ID=$(openssl asn1parse -inform DER -in "$TOKEN_FILE" \
+  CERT_ID_OUT=$(openssl asn1parse -inform DER -in "$TOKEN_FILE" \
             | awk '/:id-smime-aa-signingCertificate/{f=1} f && /\[HEX DUMP\]:/ {print; exit}' \
             | sed 's/^.*\[HEX DUMP\]://1')
-  if [ -z "$CERT_ID" ]; then
+  if [ -z "$CERT_ID_OUT" ]; then
     echo "Token $TOKEN_FILE does not contain ESSCertID or ESSCertIDv2 of issuer."
     return 1
   fi
@@ -118,19 +120,51 @@ get_tsa_cert_id() {
 # param2: OUT variable, the hashing algorithm string
 get_cert_id_hash_agorithm() {
   local TOKEN_FILE="$1"
-  local -n ALGO_NAME="$2"
+  local -n ALGO_NAME_OUT="$2"
   log "get_cert_id_hash_agorithm for $TOKEN_FILE"
   
   local PARSED=$(openssl asn1parse -inform DER -in "$TOKEN_FILE")
   
   if [[ "$PARSED" == *":id-smime-aa-signingCertificateV2"* ]]; then
     #TODO: extract non-default hashing algorithms
-    ALGO_NAME="sha256"
+    ALGO_NAME_OUT="sha256"
   elif [[ "$PARSED" == *":id-smime-aa-signingCertificate"* ]]; then
-    ALGO_NAME="sha1"
+    ALGO_NAME_OUT="sha1"
   else
-    ALGO_NAME="unknown"
+    ALGO_NAME_OUT="unknown"
   fi
+  return 0
+}
+
+# function to extract digest from token file
+# param1: path to token in DER encoding
+# param2: OUT variable, the digest
+get_token_digest() {
+  local TOKEN_FILE="$1"
+  local -n DIGEST_OUT="$2"
+  log "get_token_digest for $TOKEN_FILE"
+
+  local OFFSET=$(openssl asn1parse -inform DER -in "$TOKEN_FILE" \
+                 | awk '/:id-smime-ct-TSTInfo/{f=1} f && /\[HEX DUMP\]:/ {print; exit}' \
+                 | sed 's/:.*//' | sed 's/^[ \t]*//')
+  DIGEST_OUT=$(openssl asn1parse -inform DER -in "$TOKEN_FILE" -strparse "$OFFSET" \
+           | awk '/\[HEX DUMP\]:/ {print; exit}' \
+           | sed 's/^.*\[HEX DUMP\]://1')
+  return 0
+}
+
+# function to extract unix time of timestamp from token file
+# param1: path to token in DER encoding
+# param2: OUT variable, the unix time
+get_token_unix_time() {
+  local TOKEN_FILE="$1"
+  local -n UNIXTIME="$2"
+  log "get_token_unix_time for $TOKEN_FILE"
+
+  local TOKEN_TIMESTAMP=$(openssl ts -reply -in "$TOKEN_FILE" -token_in -token_out -text 2> "$OUT_STREAM" \
+                          | awk '/Time stamp:/{f=1} f {print; exit}' \
+                          | sed 's/^.*Time stamp: //1')
+  UNIXTIME=$(date "+%s" -d "$TOKEN_TIMESTAMP")
   return 0
 }
 
@@ -362,10 +396,8 @@ verify_token_and_add_ltv_data() {
   local CRL_CHAIN_FILE="$TMP_LTV_DIR"/crls/"$SIGNING_CERT_ID.crl"
   download_crls_for_chain "$CERT_CHAIN_FILE" "$CRL_CHAIN_FILE"
   #verify signing certificate
-  local TOKEN_TIMESTAMP=$(openssl ts -reply -in "$TOKEN_FILE" -token_in -token_out -text 2> "$OUT_STREAM" \
-                          | awk '/Time stamp:/{f=1} f {print; exit}' \
-                          | sed 's/^.*Time stamp: //1')
-  local TOKEN_UNIXTIME=$(date "+%s" -d "$TOKEN_TIMESTAMP")
+  local TOKEN_UNIXTIME=''
+  get_token_unix_time "$TOKEN_FILE" TOKEN_UNIXTIME
   #validate signing certificate
   if ! openssl verify -attime "$TOKEN_UNIXTIME" -CApath "$CA_PATH" -CRLfile "$CRL_CHAIN_FILE" \
                       -crl_check_all -untrusted "$CERT_CHAIN_FILE" "$CERT_CHAIN_FILE" &> "$OUT_STREAM"; then

@@ -114,7 +114,7 @@ while : ; do
   TRAILER_VALUE="$TSA_URL"$'\n'"$INFO"$'\n\n'"$TOKENTEXT"$'\n\n'"$TOKEN_HEADER"$'\n'"$TOKENBASE64"$'\n'"$TOKEN_FOOTER"
   #fold
   TRAILER_VALUE=$(echo -n "$TRAILER_VALUE" | sed -e 's/^/ /')
-  git interpret-trailers --where end --if-exists addIfDifferent --no-divider --trailer "Timestamp:$TRAILER_VALUE" --in-place "$COMMIT_MSG_FILE"
+  git interpret-trailers --where end --if-exists addIfDifferent --no-divider --trailer "$TRAILER_TOKEN$TRAILER_VALUE" --in-place "$COMMIT_MSG_FILE"
 done
 
 #add all ltv files

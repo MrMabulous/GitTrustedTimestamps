@@ -11,7 +11,7 @@ By using this post-commit hook in a repository and thereby adding secure timesta
 # How to use this software
 
 0. (optional, but recommended) If you're ceating a new repository, it is strongly recommended to use SHA256 hashes (git uses SHA1 by default at the time of writing) by initializing the reopository using `git init --object-format=sha256` (Note: If you want to use a public hosting server such as github for your repository, you should check whether they already support SHA256 repositories). For more information, see https://git-scm.com/docs/hash-function-transition/
-1. Copy the three bash scripts in the [hooks](hooks/) folder of this project into the .git/hooks folder of the project you want to timestamp.
+1. Copy the four bash scripts in the [hooks](hooks/) folder of this project into the .git/hooks folder of the project you want to timestamp.
 2. Configure the TSA url you want to use (in this example https://freetsa.org/tsr) using  
 `git config --local timestamping.tsa0.url https://freetsa.org/tsr`
 3. You must declare that you trust this TSA by copying the root certificate of that TSA's trust chain into the .git/hooks/trustanchors folder (create it if it doesn't exist yet). The certificate MUST be in PEM format and the filename MUST be "subject_hash.0" where`subject_hash` is what openssl returns for the `--subject_hash` argument for x509 cetificates (https://www.openssl.org/docs/man1.1.1/man1/x509.html).  
@@ -82,6 +82,16 @@ Additionally to the bare timestamp tokens stored in the commit message as traile
 2. .timestampltv/crls/issuer_hash.crl: This file contains CRL responses in PEM format for all certificates in the trust chain at the time of timestamping. In most cases this file will not change for subsequent timestamp tokens, so no additional data is added to the repository (the file content only changes when the CRL lists referenced by certificate in the trust chain change).
 
 The `issuer_hash` for both files corresponds to the ESSCertID or ESSCertIDv2 hash with which the token identifies its issuer certificate. In general this is the SHA1 hash of the DER encoded issuer certificate for RFC3161 tokens, and some other hash of the DER encoded issuer certificate for RFC5816 tokens (the ESSCertIDv2 of the token specifies the used hashing algorithm).
+
+# How to validate timestamps:
+
+Ultimately the responsibility of validating the timestamps lies with the party who wishes to proof/disprove that they are valid.  
+This repository does come however with an implementation to do so. To use it, simply run `.git/hooks/validate.sh`
+
+`validate.sh` will iterate over the entire commit history of the current branch and for each *timestamp commit* will:
+- Check that the digest contained in the token matches the commit hash of the timestamped commit
+- Checks that the TSA certificate was valid at the time of timestamping, by using historic CRL data
+- Checks whether the TSA certificate or any intermediate certificate in the chain has been revoked and if so, whether the revocationCode matches the acceptable revocation reasons discussed in chapter 4 of the RFC3161 specification (https://tools.ietf.org/html/rfc3161)
 
 # Author
 

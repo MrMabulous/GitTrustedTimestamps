@@ -85,13 +85,20 @@ The `issuer_hash` for both files corresponds to the ESSCertID or ESSCertIDv2 has
 
 # How to validate timestamps:
 
-Ultimately the responsibility of validating the timestamps lies with the party who wishes to proof/disprove that they are valid.  
-This repository does come however with an implementation to do so. To use it, simply run `.git/hooks/validate.sh`
+Ultimately the responsibility (and criteria) for validating the timestamps lies with the party who wishes to proof/disprove that they are valid and the policy being used.  
+This repository does come however with an [implementation](hooks/validate.sh) that validates the created timestamps according to the criteria listed below. To use it, simply run `.git/hooks/validate.sh`
 
 `validate.sh` will iterate over the entire commit history of the current branch and for each *timestamp commit* will:
 - Check that the digest contained in the token matches the commit hash of the timestamped commit
 - Checks that the TSA certificate was valid at the time of timestamping, by using historic CRL data
 - Checks whether the TSA certificate or any intermediate certificate in the chain has been revoked and if so, whether the revocationCode matches the acceptable revocation reasons discussed in chapter 4 of the RFC3161 specification (https://tools.ietf.org/html/rfc3161)
+- A commit containing multiple timestamps will be considered valid if there is at least one valid timestamp token (a warning will be printed if there are additional timestamps that are considered invalid)
+
+To perform these checks, the same trusted rootCAs from the `.git/hooks/trustanchors` folder are used.
+No other checks are performed. In particular, a timestamp-token is considered valid beyond the expiration date of its signing certificate if it hasn't been revoked due to a reason other than those specified in chapter 4.1 of the RFC3161 specification.  
+The curent implementation of the validate.sh script also does not consider whether the hashing algorithms used in the timestamp-token or the keylength of the signing certificate are still considered secure.
+
+The script exits with exit code 0 if all tests passed, and with exit code 1 otherwise.
 
 # Author
 

@@ -59,7 +59,10 @@ fi
 DUMMY_DIGEST=$(echo "0" | git hash-object --stdin)
 DUMMY_TOKEN="$TMP_DIR"/token.tst
 
-request_token "$TSA_URL" "$DUMMY_DIGEST" false "$DUMMY_TOKEN"
+if ! request_token "$TSA_URL" "$DUMMY_DIGEST" false "$DUMMY_TOKEN"; then
+  echo_error "Token request failed, thus the TSA $TSA_URL cannot be added to trusted TSAs."
+  exit 1
+fi
 
 CERTIFICATES="$TMP_DIR"/certificates.pem
 build_certificate_chain_for_token "$DUMMY_TOKEN" "$DUMMY_DIGEST" "$TSA_URL" "$CERTIFICATES"

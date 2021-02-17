@@ -30,13 +30,16 @@ The design goals of this implementation are
 - using only "vanilla" git features to add the timestamps in order to stay as forward compatible as possible
 - to not rely on new binaries (which would need to be trusted too). The software therefore is implemented as bash scripts and uses OpenSSL (https://www.openssl.org/) and git itself for all cryptographic operations.
 
-A further goal was to leverage the inherent Merkle-Tree based design of git in order to create a tamperproof repository archive where all no history can be rewritten without being noticed.  
+A further goal was to leverage the inherent Merkle-Tree based design of git in order to create a tamperproof repository archive where no history can be rewritten without being noticed.  
 By embedding the timestamps in the commit history, they form a hash-chain and thus new timestamps will cryptographically *seal* older ones and thereby additionally protect them from some forms of future invalidation.
 
 # Merkle-Tree layout
 
 The design leverages git's Merkle-Tree layout and embeds the timestmaps in the commit history, making them form a hash-chain that prevents later changes without being noticed.
 ![Merkle-Tree](./docs/schematic.svg)
+
+Or as a further simplified schematic:
+![Merkle-Tree](./docs/schematic_simplified.svg)
 
 # What are RFC3161 and RFC5816 Timestamps
 

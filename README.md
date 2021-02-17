@@ -23,6 +23,21 @@ If `optional` is set to true and a timestamping token cannot be retrieved, you w
 
 From now on, every `git commit` will tigger an additional commit that securely timestamps this commit.
 
+# Implementation design
+
+The design goals of this implementation are
+- transparent simplicity (security without obscurity)
+- using only "vanilla" git features to add the timestamps in order to stay as forward compatible as possible
+- to not rely on new binaries (which would need to be trusted too). The software therefore is implemented as bash scripts and uses OpenSSL (https://www.openssl.org/) and git itself for all cryptographic operations.
+
+A further goal was to leverage the inherent Merkle-Tree based design of git in order to create a tamperproof repository archive where all no history can be rewritten without being noticed.  
+By embedding the timestamps in the commit history, they form a Merkle-Chain and thus new timestamps will cryptographically *seal* older ones and thereby additionally protect them from some forms of future invalidation.
+
+# Merkle-Tree layout
+
+![Merkle-Tree](./docs/schematic.svg)
+<img src="./docs/schematic.svg">
+
 # What are RFC3161 and RFC5816 Timestamps
 
 RFC3161 (https://tools.ietf.org/html/rfc3161) and its extension RFC5816 (https://tools.ietf.org/html/rfc5816) are protocol specifications timestamp data using cryptographically secure tokens issued by an external, trusted third party TSA (Time Stamping Authority). By timestamping data this way, it is possible to prove to anyone who trusts this TSA service that the data existed already at the time of timestamping and has not been tampered with ever since. Only a secure hash of the data, without any identification, is being sent to the TSA service, so the data itself remains secret.
@@ -45,11 +60,6 @@ It is using the OriginStamp (https://originstamp.com/) timestamping service. Thi
 
 - Zeitgitter (https://pypi.org/project/git-timestamp/):  
 Zeitgitter seems to use a custom timestamping protocol and rely on developers cross-verifying their timestamps. Since it requires a custom client and server application and does not rely on RFC3161, I did not further investigate this implementation.
-
-# Implementation design
-
-The design goals of this implementation are transparent simplicity (security without obscurity), using only "vanilla" git features to add the timestamps in order to stay as forward compatible as possible, as well as to not rely on new binaries (which would need to be trusted too). The software therefore is implemented as bash scripts and uses OpenSSL (https://www.openssl.org/) and git itself for all cryptographic operations.  
-Additionally a further goal was that new commits will depend on previous timestamps, so that they cryptographically *seal* the older timestamps which makes the repository both tamperproof and protects older timestamps from some forms of invalidation.
 
 # How are timestamps added to commits
 

@@ -35,11 +35,13 @@ By embedding the timestamps in the commit history, they form a hash-chain and th
 
 # Merkle-Tree layout
 
-The design leverages git's Merkle-Tree layout and embeds the timestmaps in the commit history, making them form a hash-chain that prevents later changes without being noticed.
+The design leverages git's Merkle-Tree layout and embeds the timestmaps in the commit history, making them form a hash-chain that prevents later changes without being noticed:
+
 ![Merkle-Tree](./docs/schematic.svg)
 
 Or as a further simplified schematic:
-![Merkle-Tree](./docs/schematic_simplified.svg)
+
+<img src="./docs/schematic_simplified.svg" alt="Simplified Merkle-Tree" width="250">
 
 # What are RFC3161 and RFC5816 Timestamps
 

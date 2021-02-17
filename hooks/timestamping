@@ -204,11 +204,16 @@ request_token() {
   local RESPONSE_STATUS=$(openssl ts -reply -in "$RESPONSE_FILE" -text 2> "$OUT_STREAM" | awk '/Status: /{print; exit}' | sed 's/Status: //' | sed 's/\.//')
   if [ "$RESPONSE_STATUS" != "Granted" ]; then
     echo "Error: Token request was not granted."
-    local STATUS_INFO=$(openssl ts -reply -in "$RESPONSE_FILE" -text 2> "$OUT_STREAM" | awk '/Status info:/{f=1} f {print} /Failure info: /{exit}')
-    echo "$STATUS_INFO"
-    echo "Note: If rejection reason is unrecognized or unsupported algorithm, then this tsa cannot be used for this repository, since it uses --object-format=$ALGO"
-    echo "The token request was:"
-    openssl ts -query -in "$REQ_FILE" -text 2> "$OUT_STREAM"
+    if [ -z "$RESPONSE_STATUS" ]; then
+      cat "$RESPONSE_FILE"
+      echo ""
+    else
+      local STATUS_INFO=$(openssl ts -reply -in "$RESPONSE_FILE" -text 2> "$OUT_STREAM" | awk '/Status info:/{f=1} f {print} /Failure info: /{exit}')
+      echo "$STATUS_INFO"
+      echo "Note: If rejection reason is unrecognized or unsupported algorithm, then this tsa cannot be used for this repository, since it uses --object-format=$ALGO"
+      echo "The token request was:"
+      openssl ts -query -in "$REQ_FILE" -text 2> "$OUT_STREAM"
+    fi
     return 1
   fi
   if ! openssl ts -reply -in "$RESPONSE_FILE" -token_out -out "$OUTPUT_FILE" &> "$OUT_STREAM"; then

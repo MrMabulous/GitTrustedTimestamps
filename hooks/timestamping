@@ -75,6 +75,13 @@ echo_info() {
   echo -e "${LIGHT_BLUE}$1${NO_COLOR}"
 }
 
+#echo light green text
+echo_success() {
+  local LIGHT_GREEN='\033[1;32m'
+  local NO_COLOR='\033[0m'
+  echo -e "${LIGHT_GREEN}$1${NO_COLOR}"
+}
+
 #echo dark gray text to OUT_STREAM
 log() {
   local DARK_GRAY='\033[1;30m'

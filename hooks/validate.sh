@@ -41,6 +41,46 @@ DIR="${BASH_SOURCE%/*}"
 if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
 . "$DIR/timestamping"
 
+declare -i MINVERSION=$TIMESTAMPING_VERSION
+
+while [[ $# -gt 1 ]]; do
+  KEY="$1"
+
+  case $KEY in
+    -min|--minversion)
+      INTEGER_REGEX='^[0-9]+$'
+      if ! [[ "$2" =~ $INTEGER_REGEX ]]; then
+        echo_error "$KEY: expected positive integer"
+        exit 1
+      fi
+      MINVERSION="$2"
+      if [ $MINVERSION -gt $TIMESTAMPING_VERSION ]; then
+        echo_error "$KEY: this script only supports validating up to version $TIMESTAMPING_VERSION, but got $MINVERSION"
+        exit 1
+      fi    
+      shift # past argument
+      shift # past value
+      ;;
+    -v|--verbose)
+      OUT_STREAM=/dev/stdout
+      shift # past argument
+      ;;
+    *) # unknown option
+      echo_error "Unknown argument: $KEY"
+      exit 1
+      ;;
+  esac
+done
+OBJECT="$1"
+if [ -z "$OBJECT" ]; then
+  OBJECT="HEAD"
+fi
+COMMIT_HASH=$(git rev-parse "$OBJECT")
+if [ -z "$COMMIT_HASH" ]; then
+  echo_error "Invalid rev $OBJECT"
+  return 1
+fi
+
 # If commit contains timestamp tokens, validates them.
 # param1: commit hash
 # returns: 0 if the commit contains no timestamp tokens or contains at least one
@@ -55,6 +95,8 @@ validate_commit() {
   local URL_ARRAY
   local TOKEN_ARRAY
   if ! extract_token_from_commit "$COMMIT_HASH" "$TMP_DIR" TIMESTAMP_COMMIT_VERSION URL_ARRAY TOKEN_ARRAY; then
+    echo_error "Extracting token from commit $COMMIT_HASH failed."
+    echo ""
     return 1
   fi
   local NUM_EXTRACTED="${#TOKEN_ARRAY[@]}"
@@ -62,6 +104,26 @@ validate_commit() {
   if [ $NUM_EXTRACTED -eq 0 ];then
     #this is not a timestamp commit
     return 0
+  fi
+
+  assert "[ $TIMESTAMP_COMMIT_VERSION -gt -1 ]" "version must not be -1 if commit contains timestamps."
+
+  #By default, validate.sh only trusts timestamps with the current timestamp-commit-version. If older versions
+  #should be trusted, for example because the timestamping logic has been updated to include a new version during
+  #the lifetime of the repository, then it must be explicitly specified using the --minversion argument
+  if [ $TIMESTAMP_COMMIT_VERSION -lt $MINVERSION ]; then
+    local VERSION_TRUST_STRING="version $MINVERSION - $TIMESTAMPING_VERSION"
+    if [ $MINVERSION -eq $TIMESTAMPING_VERSION ]; then
+      VERSION_TRUST_STRING="version $MINVERSION"
+    fi
+    echo_error "Timestamping version of commit $COMMIT_HASH is $TIMESTAMP_COMMIT_VERSION, but script is set to only trust $VERSION_TRUST_STRING. Use --minversion argument to trust older versions. "
+    echo ""
+    return 1
+  fi
+  if [ $TIMESTAMP_COMMIT_VERSION -gt $TIMESTAMPING_VERSION ]; then
+    echo_error "Timestamping version of commit $COMMIT_HASH is $TIMESTAMP_COMMIT_VERSION, but this script only supports validation of timestamps up to version $TIMESTAMP_COMMIT_VERSION."
+    echo ""
+    return 1
   fi
 
   local PARENT_HASH=$(git cat-file -p "$COMMIT_HASH" | awk '/^$/{exit} /parent/ {print}' | sed 's/parent //')
@@ -223,6 +285,7 @@ validate_commit() {
     return 0
   fi
   echo_error "All $NUM_EXTRACTED timestamp tokens in commit $COMMIT_HASH are invalid."
+  echo ""
   return 1
 }
 
@@ -252,16 +315,6 @@ validate_commit_and_parents() {
   return 1
 }
 
-OBJECT="$1"
-if [ -z "$OBJECT" ]; then
-  OBJECT="HEAD"
-fi
-COMMIT_HASH=$(git rev-parse "$OBJECT")
-if [ -z "$COMMIT_HASH" ]; then
-  echo_error "Invalid rev $OBJECT"
-  return 1
-fi
-
 echo_info "Checking repository integrity..."
 #check git repository integrity
 if ! git fsck --full --strict --no-progress --no-dangling "$COMMIT_HASH"; then
@@ -274,7 +327,7 @@ echo ""
 echo_info "Validating timestamps. This may take a while..."
 echo ""
 if validate_commit_and_parents "$COMMIT_HASH"; then
-  echo_info "Validation OK: All timestamped commits in the commit history of $COMMIT_HASH contain at least one valid timestamp."
+  echo_success "Validation OK: All timestamped commits in the commit history of $COMMIT_HASH contain at least one valid timestamp."
   exit 0
 else
   echo_error "Validation Failed: There are timestamped commits in the commit history of $COMMIT_HASH which do not contain any valid timestamps."

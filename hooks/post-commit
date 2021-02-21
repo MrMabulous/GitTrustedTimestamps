@@ -40,6 +40,7 @@
 TSA0_URL=$(git config timestamping.tsa0.url)
 if [ -z "$TSA0_URL" ]; then
   # Do nothing if TSA0 has not been configured.
+  echo_info "Info: No timestamping TSA has been configured."
   exit 0
 fi
 
@@ -49,7 +50,9 @@ if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
 
 extended_exit_trap() {
   local EXIT_CODE="$?"
-  if [ "$EXIT_CODE" -gt 0 ]; then
+  log "extended_exit_trap $EXIT_CODE"
+
+  if [ $EXIT_CODE -gt 0 ]; then
     echo_error "Aborting commit."
     git reset --soft HEAD^
   fi
@@ -57,6 +60,13 @@ extended_exit_trap() {
   exit "$EXIT_CODE"
 }
 trap "extended_exit_trap" EXIT
+
+if [ ! -d "$LTV_DIR"/certs ]; then
+  mkdir -p "$LTV_DIR"/certs
+fi
+if [ ! -d "$LTV_DIR"/crls ]; then
+  mkdir -p "$LTV_DIR"/crls
+fi
 
 COMMIT_MSG=$(git show --pretty=format:"%B" --no-patch HEAD)
 
@@ -66,70 +76,160 @@ if [[ "$COMMIT_MSG" == "$SUBJECT_LINE"* ]]; then
   exit 0
 fi
 
-echo_info "Adding Timestamp commit"
+echo_info "Adding Timestamp commit. This may take a moment..."
 
-#prepare commit message
-COMMIT_MSG_FILE="$TMP_DIR"/commit_msg.txt
-echo "$SUBJECT_LINE" > "$COMMIT_MSG_FILE"
+#To arbitrarily extend the validatability of the timestamps in the repository even beyond the time when CAs cease to provide
+#revocation status, each timestamp commit ensures to contain CRL data of the timestamps in the previous timestamp commit.
+#In doing so, the lifetime of the timestamps can be arbitrarily extended into the future, so long as there is still at least one
+#newer timestamp in the repository which is still validatable (TSA CAs are often obliged to provide revocation status for many
+#years after the expiration of the signature certificate. Thus, so long as a new commit is added within this period, all older
+#timestamps' lifetime will get extended to the lifetime of the new timestamp).
+
+# recursive function to walk the commit history (including splits of merge commits) and downloading CRL data for the first
+# timestamp commit found in every branch of the history
+# param1: hash of parent commit from where to start the search (including this commit)
+retrieve_crl_for_most_recent_parent_timestamps() {
+  local COMMIT_HASH="$1"
+  log "retrieve_crl_for_most_recent_parent_timestamps for $COMMIT_HASH"
+
+  local TIMESTAMP_COMMIT_VERSION
+  local URL_ARRAY
+  local TOKEN_ARRAY
+  if ! extract_token_from_commit "$COMMIT_HASH" "$TMP_DIR" TIMESTAMP_COMMIT_VERSION URL_ARRAY TOKEN_ARRAY; then
+    return 1
+  fi
+  local NUM_EXTRACTED="${#TOKEN_ARRAY[@]}"
+
+  if [ $NUM_EXTRACTED -eq 0 ]; then
+    #this is not a timestamp commit, proceed with parent(s)
+    local PARENTS=$(git cat-file -p "$COMMIT_HASH" | awk '/^$/{exit} /parent/ {print}' | sed 's/parent //')
+    local RETURN_VAL=0
+    if [ ! -z "$PARENTS" ]; then
+      while read PARENT_HASH; do
+        if ! retrieve_crl_for_most_recent_parent_timestamps "$PARENT_HASH"; then
+          RETURN_VAL=1
+        fi
+      done <<< $(printf "%s" "$PARENTS")
+    fi
+    return "$RETURN_VAL"
+  fi
+
+  #iterate over extracted token and download CRL data
+  for (( i=0; i<"$NUM_EXTRACTED"; i++)); do
+    local TOKEN_FILE="${TOKEN_ARRAY[$i]}"
+    local DIGEST
+    get_token_digest "$TOKEN_FILE" DIGEST
+    local SIGNING_CERT_ID
+    get_tsa_cert_id "$TOKEN_FILE" SIGNING_CERT_ID
+    #get certificate chain of this token from LTV data
+    local CERT_CHAIN_FILE="$LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
+    if [ ! -f "$CERT_CHAIN_FILE" ]; then
+      #If LTV data is not in the working directory, check it out from the corresponding commit
+      local TMP_CERT_CHAIN_FILE="$TMP_DIR"/"$SIGNING_CERT_ID".cer
+      local PATH_SPEC=$(realpath --relative-to="$ROOT_DIR" "$CERT_CHAIN_FILE")
+      local CERT_CHAIN_CONTENT=$(git show "$COMMIT_HASH":"$PATH_SPEC") && printf "%s" "$CERT_CHAIN_CONTENT" > "$TMP_CERT_CHAIN_FILE"
+      CERT_CHAIN_FILE="$TMP_CERT_CHAIN_FILE"
+    fi
+    #download CRL file
+    local CRL_CHAIN_FILE="$TMP_LTV_DIR"/crls/"$SIGNING_CERT_ID".crl
+    if ! download_crls_for_chain "$CERT_CHAIN_FILE" "$CRL_CHAIN_FILE"; then
+      return 1
+    fi
+  done
+  return 0
+}
 
 #get hash of unstamped commit
-DIGEST=$(git rev-parse --verify HEAD)
-#request a timestamp token for each TSA defined
-TSA_IDX=-1
-while : ; do
-  ((TSA_IDX++))
-  TSA_URL=$(git config timestamping.tsa"$TSA_IDX".url)
-  if [ -z "$TSA_URL" ]; then
+PEARENT_COMMIT_HASH=$(git rev-parse --verify HEAD)
+if ! retrieve_crl_for_most_recent_parent_timestamps "$PEARENT_COMMIT_HASH"; then
+  echo_error "ERROR: Failed to download CRLs for last timestamp commit."
+  exit 1
+fi
+
+#In most cases the LTV data downloaded at this point won't change. However, if a new TSA
+#is being used or if a TSA changed its signing certificate since the previous timestamp commit,
+#additional LTV data needs to be added to the index, which will change the DIGEST that is signed.
+#Thus, retrieving the tokens must sometimes be repeated once.
+
+DIGEST_TO_TIMESTAMP=''
+
+for ((i=0; i<2; i++)); do
+
+  #add all ltv files
+  ls "$TMP_LTV_DIR"/*/* | while read SOURCE_FILE; do
+    TARGET_FILE="$LTV_DIR"${SOURCE_FILE#"$TMP_LTV_DIR"}
+    cp -f "$SOURCE_FILE" "$TARGET_FILE"
+    git add "$TARGET_FILE"
+  done
+  TREE_HASH=$(git write-tree)
+
+  declare PREIMAGE
+  get_preimage_from_tree_and_parent "$TREE_HASH" "$PEARENT_COMMIT_HASH" PREIMAGE
+  declare NEW_DIGEST_TO_TIMESTAMP
+  compute_digest_from_tree_and_parent "$TREE_HASH" "$PEARENT_COMMIT_HASH" NEW_DIGEST_TO_TIMESTAMP
+  if [ "$NEW_DIGEST_TO_TIMESTAMP" == "$DIGEST_TO_TIMESTAMP" ];then
+    #no new LTV data added, no need to re-request token.
     break
   fi
-  echo_info "for TSA $TSA_URL"
-  TOKEN_OPTIONAL=$(git config --type=bool timestamping.tsa"$TSA_IDX".optional)
-  #retrieve token
-  TOKEN_FILE="$TMP_DIR"/token.tst
-  if ! request_token "$TSA_URL" "$DIGEST" false "$TOKEN_FILE"; then
-    if [ ! "$TOKEN_OPTIONAL" ]; then
-      echo_error "Error: Retrieving timestamp token for critical TSA$TSA_IDX failed."
-      exit 1
-    else
-      echo_warning "Warning: Retrieving timestamp token for optional TSA$TSA_IDX failed. Token won't be added."
-      continue
+
+  #assert that this line is never reached in the second loop
+  assert "[ $i -eq 0 ]" "in second iteration there must be no new LTV data."
+
+  DIGEST_TO_TIMESTAMP="$NEW_DIGEST_TO_TIMESTAMP"
+
+  #prepare commit message
+  COMMIT_MSG_FILE="$TMP_DIR"/commit_msg.txt
+  printf '%s\n' "$SUBJECT_LINE" > "$COMMIT_MSG_FILE"
+  printf '\n%s %s\n' "$TRAILER_TOKEN_VERSION" "$TIMESTAMPING_VERSION" >> "$COMMIT_MSG_FILE"
+  printf '\n%s %s\n' "$TRAILER_TOKEN_ALGO" "$ALGO" >> "$COMMIT_MSG_FILE"
+  printf '\n%s %s\n' "$TRAILER_TOKEN_PREIMAGE" "$PREIMAGE" >> "$COMMIT_MSG_FILE"
+  printf '\n%s %s\n' "$TRAILER_TOKEN_DIGEST" "$DIGEST_TO_TIMESTAMP" >> "$COMMIT_MSG_FILE"
+
+  #request a timestamp token for each TSA defined
+  TSA_IDX=-1
+  while : ; do
+    ((TSA_IDX++))
+    TSA_URL=$(git config timestamping.tsa"$TSA_IDX".url)
+    if [ -z "$TSA_URL" ]; then
+      break
     fi
-  fi
-  #validate token and download LTV data
-  if ! verify_token_and_add_ltv_data "$TOKEN_FILE" "$DIGEST" "$TSA_URL"; then
-    if [ ! "$TOKEN_OPTIONAL" ]; then
-      echo_error "Error: Validating timestamp token for critical TSA$TSA_IDX failed."
-      exit 1
-    else
-      echo_warning "Warning: Validating timestamp token for optional TSA$TSA_IDX failed. Token won't be added."
-      continue
+    echo_info "for TSA $TSA_URL"
+    TOKEN_OPTIONAL=$(git config --type=bool timestamping.tsa"$TSA_IDX".optional)
+    #retrieve token
+    TOKEN_FILE="$TMP_DIR"/token.tst
+    if ! request_token "$TSA_URL" "$DIGEST_TO_TIMESTAMP" false "$TOKEN_FILE"; then
+      if [ ! "$TOKEN_OPTIONAL" ]; then
+        echo_error "Error: Retrieving timestamp token for critical TSA$TSA_IDX failed."
+        exit 1
+      else
+        echo_warning "Warning: Retrieving timestamp token for optional TSA$TSA_IDX failed. Token won't be added."
+        continue
+      fi
     fi
-  fi
-  #add token to commit message
-  openssl ts -reply -token_in -in "$TOKEN_FILE" -token_out -text -out "$TMP_DIR"/token.txt &> "$OUT_STREAM"
-  #do not remove or change Info line (see license)
-  INFO="Info: Timestamp generated with GitTrustedTimestamps by Mabulous GmbH"
-  TOKENBASE64=$(openssl base64 -in "$TOKEN_FILE")
-  TOKENTEXT=$(cat "$TMP_DIR"/token.txt)
-  TRAILER_VALUE="$TSA_URL"$'\n'"$INFO"$'\n\n'"$TOKENTEXT"$'\n\n'"$TOKEN_HEADER"$'\n'"$TOKENBASE64"$'\n'"$TOKEN_FOOTER"
-  #fold
-  TRAILER_VALUE=$(echo -n "$TRAILER_VALUE" | sed -e 's/^/ /')
-  git interpret-trailers --where end --if-exists addIfDifferent --no-divider --trailer "$TRAILER_TOKEN$TRAILER_VALUE" --in-place "$COMMIT_MSG_FILE"
+    #validate token and download LTV data
+    if ! verify_token_and_add_ltv_data "$TOKEN_FILE" "$DIGEST_TO_TIMESTAMP" "$TSA_URL"; then
+      if [ ! "$TOKEN_OPTIONAL" ]; then
+        echo_error "Error: Validating timestamp token for critical TSA$TSA_IDX failed."
+        exit 1
+      else
+        echo_warning "Warning: Validating timestamp token for optional TSA$TSA_IDX failed. Token won't be added."
+        continue
+      fi
+    fi
+    #add token to commit message
+    openssl ts -reply -token_in -in "$TOKEN_FILE" -token_out -text -out "$TMP_DIR"/token.txt &> "$OUT_STREAM"
+    #do not remove or change Info line (see license)
+    INFO="Info: Timestamp generated with GitTrustedTimestamps by Mabulous GmbH"
+    TOKENBASE64=$(openssl base64 -in "$TOKEN_FILE")
+    TOKENTEXT=$(cat "$TMP_DIR"/token.txt)
+    TRAILER_VALUE="$TSA_URL"$'\n'"$INFO"$'\n\n'"$TOKENTEXT"$'\n\n'"$TOKEN_HEADER"$'\n'"$TOKENBASE64"$'\n'"$TOKEN_FOOTER"
+    #fold
+    TRAILER_VALUE=$(printf "%s" "$TRAILER_VALUE" | sed -e 's/^/ /')
+    printf '\n%s%s\n' "$TRAILER_TOKEN_TIMESTAMP" "$TRAILER_VALUE" >> "$COMMIT_MSG_FILE"
+  done
 done
 
-#add all ltv files
-if [ ! -d "$LTV_DIR"/certs ]; then
-  mkdir -p "$LTV_DIR"/certs
-fi
-if [ ! -d "$LTV_DIR"/crls ]; then
-  mkdir -p "$LTV_DIR"/crls
-fi
-ls "$TMP_LTV_DIR"/*/* | while read SOURCE_FILE; do
-  TARGET_FILE="$LTV_DIR"${SOURCE_FILE#"$TMP_LTV_DIR"}
-  mv -f "$SOURCE_FILE" "$TARGET_FILE"
-  git add "$TARGET_FILE"
-done
-
+#commit timestamps
 git commit --allow-empty --quiet -F "$COMMIT_MSG_FILE"
 
 echo_info "Timestamping complete"

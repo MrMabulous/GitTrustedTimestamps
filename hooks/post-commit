@@ -105,6 +105,7 @@ retrieve_crl_for_most_recent_parent_timestamps() {
     local PARENTS=$(git cat-file -p "$COMMIT_HASH" | awk '/^$/{exit} /parent/ {print}' | sed 's/parent //')
     local RETURN_VAL=0
     if [ ! -z "$PARENTS" ]; then
+      local PARENT_HASH
       while read PARENT_HASH; do
         if ! retrieve_crl_for_most_recent_parent_timestamps "$PARENT_HASH"; then
           RETURN_VAL=1
@@ -115,7 +116,7 @@ retrieve_crl_for_most_recent_parent_timestamps() {
   fi
 
   #iterate over extracted token and download CRL data
-  for (( i=0; i<"$NUM_EXTRACTED"; i++)); do
+  for ((i=0; i<"$NUM_EXTRACTED"; i++)); do
     local TOKEN_FILE="${TOKEN_ARRAY[$i]}"
     local TSA_URL="${URL_ARRAY[$i]}"
     local DIGEST
@@ -159,14 +160,15 @@ fi
 
 DIGEST_TO_TIMESTAMP=''
 
-for ((i=0; i<2; i++)); do
-
+for ((i=0; i<3; i++)); do
   #add all ltv files
-  ls "$TMP_LTV_DIR"/*/* | while read SOURCE_FILE; do
-    TARGET_FILE="$LTV_DIR"${SOURCE_FILE#"$TMP_LTV_DIR"}
-    cp -f "$SOURCE_FILE" "$TARGET_FILE"
-    git add "$TARGET_FILE"
-  done
+  if ls "$TMP_LTV_DIR"/*/* &> "$OUT_STREAM"; then
+    ls "$TMP_LTV_DIR"/*/* | while read SOURCE_FILE; do
+      TARGET_FILE="$LTV_DIR"${SOURCE_FILE#"$TMP_LTV_DIR"}
+      cp -f "$SOURCE_FILE" "$TARGET_FILE"
+      git add "$TARGET_FILE"
+    done
+  fi
   TREE_HASH=$(git write-tree)
 
   declare PREIMAGE
@@ -179,7 +181,11 @@ for ((i=0; i<2; i++)); do
   fi
 
   #assert that this line is never reached in the second loop
-  assert "[ $i -eq 0 ]" "in second iteration there must be no new LTV data."
+  assert "[ $i -lt 2 ]" "after second iteration there must be no new LTV data."
+
+  if [ $i -eq 1 ]; then
+    echo_info "New LTV data has been added, need to request token again."
+  fi
 
   DIGEST_TO_TIMESTAMP="$NEW_DIGEST_TO_TIMESTAMP"
 
@@ -212,6 +218,7 @@ for ((i=0; i<2; i++)); do
         continue
       fi
     fi
+
     #validate token and download LTV data
     if ! verify_token_and_add_ltv_data "$TOKEN_FILE" "$DIGEST_TO_TIMESTAMP" "$TSA_URL"; then
       if [ ! "$TOKEN_OPTIONAL" ]; then
@@ -222,6 +229,7 @@ for ((i=0; i<2; i++)); do
         continue
       fi
     fi
+
     #add token to commit message
     openssl ts -reply -token_in -in "$TOKEN_FILE" -token_out -text -out "$TMP_DIR"/token.txt &> "$OUT_STREAM"
     #do not remove or change Info line (see license)

@@ -100,6 +100,7 @@ assert() {
     MESSAGE="$CONDITION"
   fi
   local -r STACK_DEPTH=${#BASH_SOURCE[@]}
+  local -i i
   local -r BACKTRACE="for ((i=1; i<$STACK_DEPTH; i++)); do
                         echo_error "\"'  [$i]: ${BASH_SOURCE[$i]} : ${FUNCNAME[$i]} line ${BASH_LINENO[$i-1]}'\""
                       done"
@@ -214,6 +215,7 @@ extract_token_from_commit() {
 
   local -r TMP_DER="$TMP_DIR"/extracted_token.der
   local -i IDX=0;
+  local -i i
   for (( i=1; i<=$NUM_EXTRACTED; i++ )); do
     local EXTRACTED_PEM_FILE="$TMP_DIR"/"$i".extracted_token.pem
     local EXTRACTED_TOKEN="$TOKEN_DIR"/"$IDX".extracted_token.tst
@@ -421,6 +423,7 @@ build_certificate_chain_for_token() {
   get_tsa_cert_id "$TOKEN_FILE" SIGNING_CERT_ID
   local CERT_ID_HASH_ALGO=""
   get_cert_id_hash_agorithm "$TOKEN_FILE" CERT_ID_HASH_ALGO
+  local -i i
   for i in {1..10} ;do
     #request dummy token. Use current commit digest
     request_token "$TSA_URL" "$DIGEST" true "$DUMMY_TOKEN"
@@ -438,6 +441,7 @@ build_certificate_chain_for_token() {
     { print > tmpdir i ".extracted.pem.cer" }' tmpdir="$TMP_DIR/"
 
     #find cetificate that signed token
+    local EXTRACTED_CERT
     while read EXTRACTED_CERT; do
       local CERT_ID=$(openssl x509 -inform PEM -in "$EXTRACTED_CERT" -outform DER | openssl dgst -"$CERT_ID_HASH_ALGO" -binary | xxd -p -c 256)
       #if openssl ts -verify -digest "$DIGEST" -in "$TOKEN_FILE" -token_in -partial_chain -CAfile "$EXTRACTED_CERT" &> "$OUT_STREAM"; then
@@ -471,6 +475,7 @@ build_certificate_chain_for_token() {
     
     #otherwise try to find in trust store
     if ls "$CA_PATH"/*.0 &> "$OUT_STREAM"; then
+      local TRUSTED_CERT
       while read TRUSTED_CERT; do
         if openssl verify -partial_chain -CAfile "$TRUSTED_CERT" "${CHAIN[-1]}" &> "$OUT_STREAM"; then
           CHAIN+=("$TRUSTED_CERT")
@@ -505,6 +510,7 @@ build_certificate_chain_for_token() {
   done
 
   echo -n > "$OUT_CERT_FILE"
+  local CERT
   for CERT in "${CHAIN[@]}"; do
     openssl x509 -in "$CERT" -noout -subject >> "$OUT_CERT_FILE"
     echo '' >> "$OUT_CERT_FILE"
@@ -541,6 +547,7 @@ download_crls_for_chain() {
   assert "[ $NUM_EXTRACTED -gt 0 ]" "Precondition: Certificate file $CERT_FILE must contain at least one certificate in PEM format."
 
   #iterate over certificates. Ignore self-signed certificates
+  local EXTRACTED_CERT
   ls "$TMP_DIR"/*.extracted.pem.cer | while read EXTRACTED_CERT; do
     if ! openssl verify -CAfile "$EXTRACTED_CERT" "$EXTRACTED_CERT" &> "$OUT_STREAM"; then
       local URL=$(openssl x509 -inform PEM -in $EXTRACTED_CERT -text -noout \

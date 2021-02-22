@@ -536,7 +536,10 @@ download_crls_for_chain() {
   cat "$CERT_FILE" \
   | awk '/-----BEGIN CERTIFICATE-----/ { i++; } /-----BEGIN CERTIFICATE-----/, /-----END CERTIFICATE-----/ \
   { print > tmpdir i ".extracted.pem.cer" }' tmpdir="$TMP_DIR/"
-  
+
+  local NUM_EXTRACTED=$(find "$TMP_DIR" -maxdepth 1 -name "*.extracted.pem.cer" -printf '.' | wc -m)
+  assert "[ $NUM_EXTRACTED -gt 0 ]" "Precondition: Certificate file $CERT_FILE must contain at least one certificate in PEM format."
+
   #iterate over certificates. Ignore self-signed certificates
   ls "$TMP_DIR"/*.extracted.pem.cer | while read EXTRACTED_CERT; do
     if ! openssl verify -CAfile "$EXTRACTED_CERT" "$EXTRACTED_CERT" &> "$OUT_STREAM"; then
@@ -579,7 +582,7 @@ verify_token_and_add_ltv_data() {
   local SIGNING_CERT_ID
   get_tsa_cert_id "$TOKEN_FILE" SIGNING_CERT_ID
   local CERT_CHAIN_FILE="$LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
-  if [ ! -f "$CERT_CHAIN_FILE" ]; then
+  if [ ! -s "$CERT_CHAIN_FILE" ]; then
     CERT_CHAIN_FILE="$TMP_LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
     #try to build full chain.
     if ! build_certificate_chain_for_token "$TOKEN_FILE" "$DIGEST" "$TSA_URL" "$CERT_CHAIN_FILE"; then
@@ -594,7 +597,7 @@ verify_token_and_add_ltv_data() {
   #verify token and download CRL data
   local CRL_CHAIN_FILE="$TMP_LTV_DIR"/crls/"$SIGNING_CERT_ID.crl"
   #only download CRL data if it hasn't been already in a previous step
-  if [ ! -f "$CRL_CHAIN_FILE" ]; then
+  if [ ! -s "$CRL_CHAIN_FILE" ]; then
     if ! download_crls_for_chain "$CERT_CHAIN_FILE" "$CRL_CHAIN_FILE"; then
       echo "Could not download CRL data for $TOKEN_FILE"
       return 1

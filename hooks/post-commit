@@ -117,19 +117,25 @@ retrieve_crl_for_most_recent_parent_timestamps() {
   #iterate over extracted token and download CRL data
   for (( i=0; i<"$NUM_EXTRACTED"; i++)); do
     local TOKEN_FILE="${TOKEN_ARRAY[$i]}"
+    local TSA_URL="${URL_ARRAY[$i]}"
     local DIGEST
     get_token_digest "$TOKEN_FILE" DIGEST
     local SIGNING_CERT_ID
     get_tsa_cert_id "$TOKEN_FILE" SIGNING_CERT_ID
     #get certificate chain of this token from LTV data
     local CERT_CHAIN_FILE="$LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
-    if [ ! -f "$CERT_CHAIN_FILE" ]; then
+    if [ ! -s "$CERT_CHAIN_FILE" ]; then
       #If LTV data is not in the working directory, check it out from the corresponding commit
       local TMP_CERT_CHAIN_FILE="$TMP_DIR"/"$SIGNING_CERT_ID".cer
       local PATH_SPEC=$(realpath --relative-to="$ROOT_DIR" "$CERT_CHAIN_FILE")
       local CERT_CHAIN_CONTENT=$(git show "$COMMIT_HASH":"$PATH_SPEC") && printf "%s" "$CERT_CHAIN_CONTENT" > "$TMP_CERT_CHAIN_FILE"
       CERT_CHAIN_FILE="$TMP_CERT_CHAIN_FILE"
     fi
+    if [ ! -s "$CERT_CHAIN_FILE" ]; then
+      CERT_CHAIN_FILE="$TMP_LTV_DIR"/certs/"$SIGNING_CERT_ID".cer
+      build_certificate_chain_for_token "$TOKEN_FILE" "$DIGEST" "$TSA_URL" "$CERT_CHAIN_FILE"
+    fi
+    assert "[ -s $CERT_CHAIN_FILE ]" "Certificate chain could neither be extracted from LTV data nor reconstructed."
     #download CRL file
     local CRL_CHAIN_FILE="$TMP_LTV_DIR"/crls/"$SIGNING_CERT_ID".crl
     if ! download_crls_for_chain "$CERT_CHAIN_FILE" "$CRL_CHAIN_FILE"; then

@@ -20,7 +20,7 @@ By using this post-commit hook in a repository and thereby adding secure timesta
 5. (optional) By default, a commit will fail if a timestamp token cannot be retrieved. If you want to make timestamping optional for a certain tsa, you can set  
 `git config --local --type=bool timestamping.tsa0.optional true`.  
 If `optional` is set to true and a timestamping token cannot be retrieved, you will receive a warning but the commit will be created nevertheless.
-7. (optional) You might want to add this README.md and the [docs](docs/) folder or this repository to your repository as well, so that documentation of the timestamps is guaranteed to be available if the timestamps should be evaluated many years in the future.
+7. (optional) You might want to add this README.md and the [docs](docs/) folder of this repository to your repository as well, so that documentation of the timestamps is guaranteed to be available if the timestamps should be evaluated many years in the future.
 
 From now on, every `git commit` will automatically tigger an additional commit that securely timestamps it.
 

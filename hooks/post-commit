@@ -160,7 +160,7 @@ fi
 
 DIGEST_TO_TIMESTAMP=''
 
-for ((i=0; i<3; i++)); do
+for ((i=0;; i++)); do
   #add all ltv files
   if ls "$TMP_LTV_DIR"/*/* &> "$OUT_STREAM"; then
     ls "$TMP_LTV_DIR"/*/* | while read SOURCE_FILE; do
@@ -180,10 +180,7 @@ for ((i=0; i<3; i++)); do
     break
   fi
 
-  #assert that this line is never reached in the second loop
-  assert "[ $i -lt 2 ]" "after second iteration there must be no new LTV data."
-
-  if [ $i -eq 1 ]; then
+  if [ $i -gt 0 ]; then
     echo_info "New LTV data has been added, need to request token again."
   fi
 

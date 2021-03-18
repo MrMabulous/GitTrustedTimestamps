@@ -11,7 +11,7 @@ By using this post-commit hook in a repository and thereby adding secure timesta
 
 # How to use this software
 
-These hooks were written for git 2.30 and newer (they may or may not work with older versions of git).
+These hooks were written for git 2.30 and newer (they may or may not work with older versions of git). If you do not use Git Bash, you need bash-4.3 or newer.
 
 0. (optional, but recommended) If you're ceating a new repository, it is strongly recommended to use SHA256 hashes (git uses SHA1 by default at the time of writing) by initializing the repository using `git init --object-format=sha256` (Note: If you want to use a public hosting server such as github for your repository, you should check whether they already support SHA256 repositories). For more information, see https://git-scm.com/docs/hash-function-transition/
 1. Copy the four bash scripts in the [hooks](hooks/) folder of this project into the .git/hooks folder of the project you want to timestamp.

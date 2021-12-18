@@ -37,16 +37,16 @@
 #    address: info@mabulous.com
 #
 
+DIR="${BASH_SOURCE%/*}"
+if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
+. "$DIR/timestamping"
+
 TSA0_URL=$(git config timestamping.tsa0.url)
 if [ -z "$TSA0_URL" ]; then
   # Do nothing if TSA0 has not been configured.
   echo_info "Info: No timestamping TSA has been configured."
   exit 0
 fi
-
-DIR="${BASH_SOURCE%/*}"
-if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
-. "$DIR/timestamping"
 
 extended_exit_trap() {
   local EXIT_CODE="$?"
